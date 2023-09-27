@@ -170,17 +170,11 @@ fn validate(commands: &Commands) -> Result<(), GbError> {
 
     match commands {
         Commands::Run { target: _, vcd } => {
+            eprintln!("  {}  {}", "[1/3]".blue().bold(), "Analyzing Solution...".green().bold());
             let file_to_exec = file_to_execute.fatal("must have a file chosen to execute")?;
-            let child = Command::new("ghdl")
-                .arg("-a")
-                .args(files)
-                .spawn()
-                .fatal("couldn't spawn ghdl subprocess")?;
-            await_vhdl_process(
-                child,
-                "couldn't await ghdl analyze subprocess, is ghdl installed?",
-            )?;
+            compile_vhd_files(files)?;
 
+            eprintln!("  {}  {}", "[2/3]".blue().bold(), "Analyzing Solution...".green().bold());
             let child = Command::new("ghdl")
                 .arg("-e")
                 .arg(
@@ -193,6 +187,7 @@ fn validate(commands: &Commands) -> Result<(), GbError> {
 
             await_vhdl_process(child, "couldn't await ghdl elaborate subprocess, is ghdl installed correctly, and do you have run permissions?")?;
 
+            eprintln!("  {}  {}", "[3/3]".blue().bold(), "Executing Solution...".green().bold());
             let child = Command::new("ghdl")
                 .arg("-r")
                 .arg(
@@ -210,21 +205,32 @@ fn validate(commands: &Commands) -> Result<(), GbError> {
             await_vhdl_process(child, "couldn't await ghdl run subprocess, is ghdl installed correctly, and do you have run permissions?")?;
         }
         Commands::Compile { target: _ } => {
-            let child = Command::new("ghdl")
-                .arg("-a")
-                .args(files)
-                .spawn()
-                .fatal("couldn't spawn ghdl subprocess")?;
-            await_vhdl_process(
-                child,
-                "couldn't await ghdl analyze subprocess, is ghdl installed?",
-            )?;
+            eprintln!("  {}  {}", "[1/1]".blue().bold(), "Analyzing Solution...".green().bold());
+            compile_vhd_files(files)?;
+            eprintln!("  {}  {}", "[1/1]".blue().bold(), "Successfully Analyzed.".green().bold());
         }
     }
 
     Ok(())
 }
 
+fn compile_vhd_files(files: Vec<&str>) -> Result<(), GbError> {
+    let child = Command::new("ghdl")
+        .arg("-a")
+        .args(files)
+        .spawn()
+        .fatal("couldn't spawn ghdl subprocess")?;
+    await_vhdl_process(
+        child,
+        "couldn't await ghdl analyze subprocess, is ghdl installed?",
+    )?;
+    Ok(())
+}
+
+
+fn create_build_src() -> Result<(), GbError>{ 
+    std::fs::create_dir_all("build/src/").fatal("could not construct directory for build source files")
+}
 fn await_vhdl_process(mut child: std::process::Child, message: &str) -> Result<(), GbError> {
     let waiting = child.wait().fatal(message)?;
     Ok(if !waiting.success() {
