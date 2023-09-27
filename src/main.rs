@@ -255,7 +255,7 @@ fn compile_vhd_files(files: Vec<&str>) -> Result<(), GbError> {
             .fatal(format!("could not get file stem for {file_str}"))?;
         // TODO: Might need to not add the .o on some systems.
 
-        let path = std::path::PathBuf::from(stem).with_extension(".o");
+        let path = std::path::PathBuf::from(stem).with_extension("o");
 
         std::fs::rename(&path, std::path::PathBuf::from("build/root/").join(&path))
             .fatal(format!("could not move generated build artifact `{path:?}` to build dir"))?;
