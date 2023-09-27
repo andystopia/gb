@@ -1,0 +1,24 @@
+default.target = "one-digit"
+default.vcd-viewer = "gtkwave"
+
+
+[target.one-digit]
+files = [
+  "counter.vhd",
+  "8bit.vhd",
+  "hello.vhd"
+]
+execute = "counter.vhd"
+
+
+
+[target.two-digit]
+files = [
+  "counter.vhd",
+  "8bit.vhd",
+  "hello.vhd"
+]
+
+execute = "counter.vhd"
+
+
