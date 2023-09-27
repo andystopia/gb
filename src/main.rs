@@ -258,7 +258,7 @@ fn compile_vhd_files(files: Vec<&str>) -> Result<(), GbError> {
         let path = std::path::PathBuf::from(stem).with_extension(".o");
 
         std::fs::rename(&path, std::path::PathBuf::from("build/root/").join(&path))
-            .fatal("could not move generated build artifact to build dir")?;
+            .fatal(format!("could not move generated build artifact `{path:?}` to build dir"))?;
     }
     Ok(())
 }
