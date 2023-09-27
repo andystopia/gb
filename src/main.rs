@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-use std::error::Error;
+use std::{error::Error, process::Command};
 
 use clap::Parser;
 use colored::Colorize;
@@ -23,11 +23,11 @@ pub struct GbError {
 }
 
 trait Check<T> {
-    fn error(self, message: impl Into<String>) -> Result<T, GbError>;
+    fn fatal(self, message: impl Into<String>) -> Result<T, GbError>;
 }
 
 impl<T, E: std::error::Error + Send + Sync + 'static> Check<T> for Result<T, E> {
-    fn error(self, message: impl Into<String>) -> Result<T, GbError> {
+    fn fatal(self, message: impl Into<String>) -> Result<T, GbError> {
         self.map_err(|e| GbError {
             message: message.into(),
             level: Level::Fatal,
@@ -37,7 +37,7 @@ impl<T, E: std::error::Error + Send + Sync + 'static> Check<T> for Result<T, E> 
 }
 
 impl<T> Check<T> for Option<T> {
-    fn error(self, message: impl Into<String>) -> Result<T, GbError> {
+    fn fatal(self, message: impl Into<String>) -> Result<T, GbError> {
         self.ok_or_else(|| GbError {
             message: message.into(),
             level: Level::Fatal,
@@ -117,10 +117,10 @@ fn main() -> color_eyre::Result<()> {
 fn validate(commands: &Commands) -> Result<(), GbError> {
     // let pwd = current_dir().error("cannot get the current directory")?;
     let manifest = std::fs::read_to_string("gb.toml")
-        .error("manifest file `gb.toml` not found in the current directory")?;
+        .fatal("manifest file `gb.toml` not found in the current directory")?;
     let doc = manifest
         .parse::<Document>()
-        .error("failed to parse manifest file")?;
+        .fatal("failed to parse manifest file")?;
     let default_target = doc
         .as_item()
         .get("default")
@@ -129,28 +129,28 @@ fn validate(commands: &Commands) -> Result<(), GbError> {
     let target = commands
         .target()
         .or(default_target)
-        .error("No target was passed and no default target was set. Aborting.")?;
+        .fatal("No target was passed and no default target was set. Aborting.")?;
     let target_info = doc
         .as_item()
         .get("target")
-        .error("there are no provided targets; please provide them")?
+        .fatal("there are no provided targets; please provide them")?
         .get(target)
-        .error(format!(
+        .fatal(format!(
             "Attempted to run target `{target}` but it was not found in gb.toml"
         ))?;
     let files = target_info
         .get("files")
-        .error(format!(
+        .fatal(format!(
             "a files key is required for every target but it was not supplied for {target}"
         ))?
         .as_array()
-        .error("the files list must be an array")?
+        .fatal("the files list must be an array")?
         .into_iter()
         .map(|f| f.as_str())
         .collect::<Option<Vec<&str>>>()
-        .error("all the files in the files list, must be listed by their path as a string")?;
+        .fatal("all the files in the files list, must be listed by their path as a string")?;
 
-    let _file_to_execute = target_info.get("execute").and_then(|file| file.as_str());
+    let file_to_execute = target_info.get("execute").and_then(|file| file.as_str());
 
     let missing_files = files
         .iter()
@@ -169,24 +169,67 @@ fn validate(commands: &Commands) -> Result<(), GbError> {
     }
 
     match commands {
-        Commands::Run { target: _, vcd: _ } => todo!(),
-        Commands::Compile { target: _ } => {
-            let mut child = std::process::Command::new("ghdl")
+        Commands::Run { target: _, vcd } => {
+            let file_to_exec = file_to_execute.fatal("must have a file chosen to execute")?;
+            let child = Command::new("ghdl")
                 .arg("-a")
                 .args(files)
                 .spawn()
-                .error("couldn't spawn ghdl subprocess")?;
-            let waiting = child.wait().error("couldn't await ghdl analyze subprocess")?;
+                .fatal("couldn't spawn ghdl subprocess")?;
+            await_vhdl_process(
+                child,
+                "couldn't await ghdl analyze subprocess, is ghdl installed?",
+            )?;
 
-            if !waiting.success() {
-                Err(GbError {
-                    message: "GHDL didn't compile successfully.".to_owned(),
-                    level: Level::Fatal,
-                    source: None,
-                })?;
-            }
+            let child = Command::new("ghdl")
+                .arg("-e")
+                .arg(
+                    std::path::Path::new(file_to_exec)
+                        .file_stem()
+                        .fatal("could not get base filename")?,
+                )
+                .spawn()
+                .fatal("couldn't spawn ghdl elaborate subprocess, is ghdl installed?")?;
+
+            let child = Command::new("ghdl")
+                .arg("-r")
+                .arg(
+                    std::path::Path::new(file_to_exec)
+                        .file_stem()
+                        .fatal("could not get base filename")?,
+                )
+                .args(match vcd {
+                    Some(vcd) => [format!("--vcd={}", vcd.to_string_lossy())].to_vec(),
+                    None => vec![],
+                })
+                .spawn()
+                .fatal("couldn't spawn ghdl run subprocess, is ghdl installed?")?;
+
+            await_vhdl_process(child, "couldn't await ghdl run subprocess, is ghdl installed correctly, and do you have run permissions?")?;
+        }
+        Commands::Compile { target: _ } => {
+            let child = Command::new("ghdl")
+                .arg("-a")
+                .args(files)
+                .spawn()
+                .fatal("couldn't spawn ghdl subprocess")?;
+            await_vhdl_process(
+                child,
+                "couldn't await ghdl analyze subprocess, is ghdl installed?",
+            )?;
         }
     }
 
     Ok(())
+}
+
+fn await_vhdl_process(mut child: std::process::Child, message: &str) -> Result<(), GbError> {
+    let waiting = child.wait().fatal(message)?;
+    Ok(if !waiting.success() {
+        Err(GbError {
+            message: "GHDL didn't compile successfully.".to_owned(),
+            level: Level::Fatal,
+            source: None,
+        })?;
+    })
 }
