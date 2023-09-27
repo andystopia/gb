@@ -191,6 +191,8 @@ fn validate(commands: &Commands) -> Result<(), GbError> {
                 .spawn()
                 .fatal("couldn't spawn ghdl elaborate subprocess, is ghdl installed?")?;
 
+            await_vhdl_process(child, "couldn't await ghdl elaborate subprocess, is ghdl installed correctly, and do you have run permissions?")?;
+
             let child = Command::new("ghdl")
                 .arg("-r")
                 .arg(
