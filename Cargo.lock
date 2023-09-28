@@ -224,7 +224,7 @@ dependencies = [
 
 [[package]]
 name = "gb"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "clap",
  "color-eyre",
