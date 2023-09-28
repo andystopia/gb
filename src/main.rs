@@ -85,9 +85,12 @@ pub enum Commands {
         vcd: Option<std::path::PathBuf>,
     },
 
-    /// compile a configuration (useful for errors!), only analyzes
-    #[clap(alias = "analyze")]
-    Compile {
+    /// analyze *and* elaborate a solution
+    #[clap(alias = "build")]
+    Compile { target: Option<String> },
+
+    /// analyzes a configuration (useful for errors!), only analyzes
+    Analyze {
         /// compile a specific target
         target: Option<String>,
     },
@@ -98,6 +101,7 @@ impl Commands {
         match self {
             Commands::Run { target, vcd: _ } => target.as_ref().map(|i| i.as_ref()),
             Commands::Compile { target } => target.as_ref().map(|i| i.as_ref()),
+            Commands::Analyze { target } => target.as_ref().map(|i| i.as_ref()),
         }
     }
 }
@@ -169,71 +173,96 @@ fn validate(commands: &Commands) -> Result<(), GbError> {
     }
 
     match commands {
-        Commands::Run { target: _, vcd } => {
-            eprintln!(
-                "  {}  {}",
-                "[1/3]".blue().bold(),
-                "Analyzing Solution...".green().bold()
-            );
-            compile_vhd_files(files)?;
-
-            eprintln!(
-                "  {}  {}",
-                "[2/3]".blue().bold(),
-                "Elaborating Solution...".green().bold()
-            );
-            let file_to_exec = file_to_execute.fatal("must have a file chosen to execute in order to elaborate. Please set `execute = \"<YOUR_FILE>\" in gb.toml")?;
-
-            let child = Command::new("ghdl")
-                .arg("-e")
-                .arg(
-                    std::path::Path::new(file_to_exec)
-                        .file_stem()
-                        .fatal("could not get base filename")?,
-                )
-                .current_dir("build/root/")
-                .spawn()
-                .fatal("couldn't spawn ghdl elaborate subprocess, is ghdl installed?")?;
-
-            await_vhdl_process(child, "couldn't await ghdl elaborate subprocess, is ghdl installed correctly, and do you have run permissions?")?;
-
-            eprintln!(
-                "  {}  {}",
-                "[3/3]".blue().bold(),
-                "Executing Solution...".green().bold()
-            );
-            let child = Command::new("ghdl")
-                .arg("-r")
-                .current_dir("build/root/")
-                .arg(
-                    std::path::Path::new(file_to_exec)
-                        .file_stem()
-                        .fatal("could not get base filename")?,
-                )
-                .args(match vcd {
-                    Some(vcd) => [format!("--vcd={}", vcd.to_string_lossy())].to_vec(),
-                    None => vec![],
-                })
-                .spawn()
-                .fatal("couldn't spawn ghdl run subprocess, is ghdl installed?")?;
-
-            await_vhdl_process(child, "couldn't await ghdl run subprocess, is ghdl installed correctly, and do you have run permissions?")?;
-        }
         Commands::Compile { target: _ } => {
-            eprintln!(
-                "  {}  {}",
-                "[1/1]".blue().bold(),
-                "Analyzing Solution...".green().bold()
-            );
-            compile_vhd_files(files)?;
-            eprintln!(
-                "  {}  {}",
-                "[1/1]".blue().bold(),
-                "Successfully Analyzed.".green().bold()
-            );
+            analyze_vhdl(files, " [1/2] ")?;
+
+            elaborate_vhdl_solution(file_to_execute, " [2/2] ")?;
+        }
+        Commands::Run { target: _, vcd } => {
+            analyze_vhdl(files, " [1/3] ")?;
+
+            let file_to_exec = elaborate_vhdl_solution(file_to_execute, " [2/3] ")?;
+
+            execute_vhdl_solution(file_to_exec, vcd, " [3/3]")?;
+        }
+        Commands::Analyze { target: _ } => {
+            analyze_vhdl(files, " [1/1] ")?;
         }
     }
 
+    Ok(())
+}
+
+fn execute_vhdl_solution(
+    file_to_exec: &str,
+    vcd: &Option<std::path::PathBuf>,
+    step: &str,
+) -> Result<(), GbError> {
+    eprintln!(
+        "  {}  {}",
+        step.blue().bold(),
+        "Executing Solution...".green().bold()
+    );
+    let child = Command::new("ghdl")
+        .arg("-r")
+        .current_dir("build/root/")
+        .arg(
+            std::path::Path::new(file_to_exec)
+                .file_stem()
+                .fatal("could not get base filename")?,
+        )
+        .args(match vcd {
+            Some(vcd) => [format!("--vcd={}", vcd.to_string_lossy())].to_vec(),
+            None => vec![],
+        })
+        .spawn()
+        .fatal("couldn't spawn ghdl run subprocess, is ghdl installed?")?;
+    await_vhdl_process(child, "couldn't await ghdl run subprocess, is ghdl installed correctly, and do you have run permissions?")?;
+    Ok(())
+}
+
+fn elaborate_vhdl_solution<'s>(
+    file_to_execute: Option<&'s str>,
+    step: &str,
+) -> Result<&'s str, GbError> {
+    eprintln!(
+        "  {}  {}",
+        step.blue().bold(),
+        "Elaborating Solution...".green().bold()
+    );
+    let file_to_exec = file_to_execute.fatal("must have a file chosen to execute in order to elaborate. Please set `execute = \"<YOUR_FILE>\" in gb.toml")?;
+    let child = Command::new("ghdl")
+        .arg("-e")
+        .arg(
+            std::path::Path::new(file_to_exec)
+                .file_stem()
+                .fatal("could not get base filename")?,
+        )
+        .current_dir("build/root/")
+        .spawn()
+        .fatal("couldn't spawn ghdl elaborate subprocess, is ghdl installed?")?;
+    await_vhdl_process(child, "couldn't await ghdl elaborate subprocess, is ghdl installed correctly, and do you have run permissions?")?;
+
+    eprintln!(
+        "  {}  {}",
+        step.blue().bold(),
+        "Successfully Elaborated.".green().bold()
+    );
+    Ok(file_to_exec)
+}
+
+fn analyze_vhdl(files: Vec<&str>, steps: &str) -> Result<(), GbError> {
+    eprintln!(
+        "  {}  {}",
+        steps.blue().bold(),
+        "Analyzing Solution...".green().bold()
+    );
+    compile_vhd_files(files)?;
+    eprintln!(
+        "  {}  {}",
+        steps.blue().bold(),
+        "Successfully Analyzed.".green().bold()
+    );
     Ok(())
 }
 
@@ -297,7 +326,8 @@ fn move_work_obj93_to_build_directory() -> Result<(), GbError> {
 
     let full = lines.join("\n");
 
-    std::fs::write("build/root/work-obj93.cf", full).fatal("could not move modified work-obj93.cf, but it is necessary to build ghdl")?;
+    std::fs::write("build/root/work-obj93.cf", full)
+        .fatal("could not move modified work-obj93.cf, but it is necessary to build ghdl")?;
 
     std::fs::remove_file("work-obj93.cf").fatal("could not remove work-obj93.cf")?;
 
