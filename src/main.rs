@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-use std::{error::Error, process::Command};
+use std::{borrow::Cow, error::Error, process::Command};
 
 use clap::Parser;
 use colored::Colorize;
@@ -129,7 +129,7 @@ fn validate(commands: &Commands) -> Result<(), GbError> {
     let target = commands
         .target()
         .or(default_target)
-        .fatal("No target was passed and no default target was set. Aborting.")?;
+        .fatal("No target was passed and no default target was set")?;
     let target_info = doc
         .as_item()
         .get("target")
@@ -182,7 +182,7 @@ fn validate(commands: &Commands) -> Result<(), GbError> {
                 "[2/3]".blue().bold(),
                 "Elaborating Solution...".green().bold()
             );
-            let file_to_exec = file_to_execute.fatal("must have a file chosen to execute")?;
+            let file_to_exec = file_to_execute.fatal("must have a file chosen to execute in order to elaborate. Please set `execute = \"<YOUR_FILE>\" in gb.toml")?;
 
             let child = Command::new("ghdl")
                 .arg("-e")
@@ -191,6 +191,7 @@ fn validate(commands: &Commands) -> Result<(), GbError> {
                         .file_stem()
                         .fatal("could not get base filename")?,
                 )
+                .current_dir("build/root/")
                 .spawn()
                 .fatal("couldn't spawn ghdl elaborate subprocess, is ghdl installed?")?;
 
@@ -203,6 +204,7 @@ fn validate(commands: &Commands) -> Result<(), GbError> {
             );
             let child = Command::new("ghdl")
                 .arg("-r")
+                .current_dir("build/root/")
                 .arg(
                     std::path::Path::new(file_to_exec)
                         .file_stem()
@@ -246,6 +248,12 @@ fn compile_vhd_files(files: Vec<&str>) -> Result<(), GbError> {
         "couldn't await ghdl analyze subprocess, is ghdl installed?",
     )?;
 
+    move_artifacts_to_build_directory(files)?;
+    move_work_obj93_to_build_directory()?;
+    Ok(())
+}
+
+fn move_artifacts_to_build_directory(files: Vec<&str>) -> Result<(), GbError> {
     std::fs::create_dir_all("build/root/").fatal("could not create build directory")?;
     for file_str in files {
         let file = std::path::Path::new(file_str);
@@ -257,9 +265,42 @@ fn compile_vhd_files(files: Vec<&str>) -> Result<(), GbError> {
 
         let path = std::path::PathBuf::from(stem).with_extension("o");
 
-        std::fs::rename(&path, std::path::PathBuf::from("build/root/").join(&path))
-            .fatal(format!("could not move generated build artifact `{path:?}` to build dir"))?;
+        std::fs::rename(&path, std::path::PathBuf::from("build/root/").join(&path)).fatal(
+            format!("could not move generated build artifact `{path:?}` to build dir"),
+        )?;
     }
+    Ok(())
+}
+
+fn move_work_obj93_to_build_directory() -> Result<(), GbError> {
+    // this method is actually a little more complicated than you might *initially* think, since
+    // we need to "fix-up" some of the file paths inside of the file, so that we can still compile
+    // the sources. The goal of gb is to be opinionated and flexible while hiding away the details
+    // of the what really makes ghdl tick. We just want our traditional build / run steps, basically.
+    // Like for instance in C, most of the time it's build, link, run. But generally we just think of build
+    // and run. It's like that.
+
+    let file = std::fs::read_to_string("work-obj93.cf").fatal("could not load work-obj93.cf, which is a necessary compliation artifact to move it to the build dir")?;
+
+    let mut lines = file.lines().map(Cow::Borrowed).collect::<Vec<Cow<str>>>();
+
+    const PREFIX: &str = "file . \"";
+    for line in &mut lines {
+        if line.starts_with(PREFIX) {
+            let mut string: String = line.clone().into_owned();
+
+            string.insert_str(PREFIX.len(), "../../");
+
+            *line = Cow::Owned(string);
+        }
+    }
+
+    let full = lines.join("");
+
+    std::fs::write("/build/root", full).fatal("could not move modified work-obj93.cf, but it is necessary to build ghdl")?;
+
+    std::fs::remove_file("work-obj93.cf").fatal("could not remove work-obj93.cf")?;
+
     Ok(())
 }
 
@@ -267,6 +308,7 @@ fn create_build_src() -> Result<(), GbError> {
     std::fs::create_dir_all("build/src/")
         .fatal("could not construct directory for build source files")
 }
+
 fn await_vhdl_process(mut child: std::process::Child, message: &str) -> Result<(), GbError> {
     let waiting = child.wait().fatal(message)?;
     Ok(if !waiting.success() {
