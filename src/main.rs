@@ -295,9 +295,9 @@ fn move_work_obj93_to_build_directory() -> Result<(), GbError> {
         }
     }
 
-    let full = lines.join("");
+    let full = lines.join("\n");
 
-    std::fs::write("/build/root", full).fatal("could not move modified work-obj93.cf, but it is necessary to build ghdl")?;
+    std::fs::write("/build/root/work-obj93.cf", full).fatal("could not move modified work-obj93.cf, but it is necessary to build ghdl")?;
 
     std::fs::remove_file("work-obj93.cf").fatal("could not remove work-obj93.cf")?;
 
