@@ -11,6 +11,7 @@ clap = { version = "4.4.5", features = ["derive"] }
 color-eyre = "0.6.2"
 colored = "2.0.4"
 toml_edit = "0.20.0"
+tree-sitter = "0.20.10"
 
 # The profile that 'cargo dist' will build with
 [profile.dist]
@@ -27,3 +28,6 @@ ci = ["github"]
 installers = []
 # Target platforms to build apps for (Rust target-triple syntax)
 targets = ["x86_64-unknown-linux-gnu", "x86_64-apple-darwin", "x86_64-pc-windows-msvc", "aarch64-apple-darwin"]
+
+[build-dependencies]
+cc = "1.0.83"

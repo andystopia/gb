@@ -1,6 +1,9 @@
 #![allow(dead_code)]
 
-use std::{borrow::Cow, error::Error, process::Command};
+use std::{
+    borrow::Cow, error::Error, fs::OpenOptions, io::Write, path::PathBuf, process::Command,
+    str::FromStr,
+};
 
 use clap::Parser;
 use colored::Colorize;
@@ -82,6 +85,7 @@ pub enum Commands {
         /// choose a target to run with vhdl
         target: Option<String>,
         /// output a vcd file
+        #[arg(long)]
         vcd: Option<std::path::PathBuf>,
     },
 
@@ -94,6 +98,18 @@ pub enum Commands {
         /// compile a specific target
         target: Option<String>,
     },
+
+    /// Use a waveform viewer, default.vcd-viewer to specify.
+    /// will do a run and then view the wave, in a detached
+    /// process
+    Wave {
+        target: Option<String>,
+        #[arg(long)]
+        vcd: Option<std::path::PathBuf>,
+    },
+
+    /// Initilize a ghdl project with gb as the build system.
+    Init,
 }
 
 impl Commands {
@@ -102,6 +118,8 @@ impl Commands {
             Commands::Run { target, vcd: _ } => target.as_ref().map(|i| i.as_ref()),
             Commands::Compile { target } => target.as_ref().map(|i| i.as_ref()),
             Commands::Analyze { target } => target.as_ref().map(|i| i.as_ref()),
+            Commands::Init => None,
+            Commands::Wave { target, vcd: _ } => target.as_ref().map(|i| i.as_ref()),
         }
     }
 }
@@ -119,6 +137,11 @@ fn main() -> color_eyre::Result<()> {
 }
 
 fn validate(commands: &Commands) -> Result<(), GbError> {
+    if let Commands::Init = commands {
+        init()?;
+        return Ok(());
+    }
+
     // let pwd = current_dir().error("cannot get the current directory")?;
     let manifest = std::fs::read_to_string("gb.toml")
         .fatal("manifest file `gb.toml` not found in the current directory")?;
@@ -129,6 +152,11 @@ fn validate(commands: &Commands) -> Result<(), GbError> {
         .as_item()
         .get("default")
         .and_then(|default| default.get("target"))
+        .and_then(|default_target| default_target.as_str());
+    let default_vcd_viewer = doc
+        .as_item()
+        .get("default")
+        .and_then(|default| default.get("vcd-viewer"))
         .and_then(|default_target| default_target.as_str());
     let target = commands
         .target()
@@ -172,6 +200,11 @@ fn validate(commands: &Commands) -> Result<(), GbError> {
         })?;
     }
 
+    let vcd_output_name = target_info
+        .get("vcd-name")
+        .and_then(|i| i.as_str())
+        .map(std::path::PathBuf::from);
+
     match commands {
         Commands::Compile { target: _ } => {
             analyze_vhdl(files, " [1/2] ")?;
@@ -183,19 +216,69 @@ fn validate(commands: &Commands) -> Result<(), GbError> {
 
             let file_to_exec = elaborate_vhdl_solution(file_to_execute, " [2/3] ")?;
 
-            execute_vhdl_solution(file_to_exec, vcd, " [3/3]")?;
+            execute_vhdl_solution(file_to_exec, vcd.clone().or(vcd_output_name), " [3/3]")?;
         }
         Commands::Analyze { target: _ } => {
             analyze_vhdl(files, " [1/1] ")?;
         }
+        Commands::Wave { target: _, vcd } => {
+            let vcd = vcd.clone().or(vcd_output_name);
+            analyze_vhdl(files, " [1/3] ")?;
+
+            let file_to_exec = elaborate_vhdl_solution(file_to_execute, " [2/3] ")?;
+
+            execute_vhdl_solution(file_to_exec, vcd.clone(), " [3/3]")?;
+
+            launch_vcd_viewer(vcd, default_vcd_viewer)?;
+        }
+        Commands::Init => init()?,
     }
+
+    Ok(())
+}
+
+fn launch_vcd_viewer(
+    vcd: Option<std::path::PathBuf>,
+    default_vcd_viewer: Option<&str>,
+) -> Result<(), GbError> {
+    if vcd.is_none() {
+        Err(GbError {
+            message: "vcd-name not set in target for toml. Cannot launch vcd viewer".to_owned(),
+            level: Level::Fatal,
+            source: None,
+        })?;
+    }
+    if default_vcd_viewer.is_none() {
+        Err(GbError {
+            message: "top level `default.vcd-viewer` not set in target for toml. Cannot launch vcd viewer"
+                .to_owned(),
+            level: Level::Fatal,
+            source: None,
+        })?;
+    }
+    if default_vcd_viewer != Some("gtkwave") {
+        Err(GbError {
+            message: "The only supported wave viewer is gtkwave. Please set `default.vcd-viewer = \"gtkwave\"`"
+                .to_owned(),
+            level: Level::Fatal,
+            source: None,
+        })?;
+    }
+    eprintln!("launching waveform viewer");
+
+    Command::new("gtkwave")
+        .arg(PathBuf::from("build/root/").join(vcd.unwrap()))
+        .spawn()
+        .fatal("could not create gtkwave")?
+        .wait()
+        .fatal("failed to await gtkwave")?;
 
     Ok(())
 }
 
 fn execute_vhdl_solution(
     file_to_exec: &str,
-    vcd: &Option<std::path::PathBuf>,
+    vcd: Option<std::path::PathBuf>,
     step: &str,
 ) -> Result<(), GbError> {
     eprintln!(
@@ -272,13 +355,27 @@ fn compile_vhd_files(files: Vec<&str>) -> Result<(), GbError> {
         .args(&files)
         .spawn()
         .fatal("couldn't spawn ghdl subprocess")?;
-    await_vhdl_process(
-        child,
-        "couldn't await ghdl analyze subprocess, is ghdl installed?",
-    )?;
+    {
+        let mut child = child;
+        let waiting = child
+            .wait()
+            .fatal("couldn't await ghdl analyze subprocess, is ghdl installed?")?;
+        cleanup_build_dir(files)?;
+        Ok(if !waiting.success() {
+            Err(GbError {
+                message: "GHDL didn't compile successfully.".to_owned(),
+                level: Level::Fatal,
+                source: None,
+            })?;
+        })
+    }?;
 
-    move_artifacts_to_build_directory(files)?;
+    Ok(())
+}
+
+fn cleanup_build_dir(files: Vec<&str>) -> Result<(), GbError> {
     move_work_obj93_to_build_directory()?;
+    move_artifacts_to_build_directory(files)?;
     Ok(())
 }
 
@@ -326,6 +423,9 @@ fn move_work_obj93_to_build_directory() -> Result<(), GbError> {
 
     let full = lines.join("\n");
 
+    std::fs::create_dir_all("build/root/")
+        .fatal("could not create the build directory, but it is necessary to run ghdl")?;
+
     std::fs::write("build/root/work-obj93.cf", full)
         .fatal("could not move modified work-obj93.cf, but it is necessary to build ghdl")?;
 
@@ -334,6 +434,43 @@ fn move_work_obj93_to_build_directory() -> Result<(), GbError> {
     Ok(())
 }
 
+fn init() -> Result<(), GbError> {
+    let exists = PathBuf::from_str("gb.toml").unwrap().exists();
+
+    if exists {
+        eprintln!("already inited!");
+        return Ok(());
+    }
+
+    let mut ignore = OpenOptions::new()
+        .append(true)
+        .create(true)
+        .open(".gitignore")
+        .fatal("could not create .gitignore file")?;
+
+    ignore
+        .write_all("/build".as_bytes())
+        .fatal("could not write '/build' into .gitignore")?;
+
+    std::fs::write(
+        "gb.toml",
+        r#"
+    default.target = "default-target"
+    default.vcd-viewer = "gtkwave"
+    
+    [target.default-target]
+    files = []
+    
+    # execute = "your-file-to-execute"
+    # vcd-name = "your-vcd-name.vcd"
+    "#,
+    )
+    .fatal("could not write sample gb.toml")?;
+
+    std::fs::create_dir_all("src/").fatal("could not create src/ dir")?;
+
+    Ok(())
+}
 fn create_build_src() -> Result<(), GbError> {
     std::fs::create_dir_all("build/src/")
         .fatal("could not construct directory for build source files")

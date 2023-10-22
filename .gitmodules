@@ -1,0 +1,3 @@
+[submodule "tree-sitter-vhdl"]
+	path = tree-sitter-vhdl
+	url = https://github.com/alemuller/tree-sitter-vhdl
