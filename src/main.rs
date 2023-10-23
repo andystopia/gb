@@ -1,7 +1,12 @@
 #![allow(dead_code)]
 
 use std::{
-    borrow::Cow, error::Error, fs::OpenOptions, io::Write, path::PathBuf, process::Command,
+    borrow::Cow,
+    error::Error,
+    fs::OpenOptions,
+    io::Write,
+    path::PathBuf,
+    process::Command,
     str::FromStr,
 };
 
@@ -276,6 +281,33 @@ fn launch_vcd_viewer(
     Ok(())
 }
 
+#[cfg(target_os = "macos")]
+fn get_macos_version() -> String {
+    use std::process::Stdio;
+
+    let cmd = Command::new("sw_vers")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("could not access macos version");
+
+    let output = cmd
+        .wait_with_output()
+        .expect("could not access macos version");
+
+    if output.status.success() {
+        let str = String::from_utf8_lossy(output.stdout.as_slice());
+
+        str.lines()
+            .filter(|line| line.starts_with("ProductVersion:"))
+            .next()
+            .map(|line| line.trim_start_matches("ProductVersion:").trim())
+            .expect("failed to parse macos version")
+            .to_owned()
+    } else {
+        panic!("could not access macos version")
+    }
+}
 fn execute_vhdl_solution(
     file_to_exec: &str,
     vcd: Option<std::path::PathBuf>,
@@ -314,8 +346,14 @@ fn elaborate_vhdl_solution<'s>(
         "Elaborating Solution...".green().bold()
     );
     let file_to_exec = file_to_execute.fatal("must have a file chosen to execute in order to elaborate. Please set `execute = \"<YOUR_FILE>\" in gb.toml")?;
+
+    let args = if cfg!(target_os = "macos") { 
+        vec!["-e".to_owned(), format!("-Wl,-mmacosx-version-min={}", get_macos_version())]
+    } else { 
+        vec!["-e".to_owned()]
+    };
     let child = Command::new("ghdl")
-        .arg("-e")
+        .args(&args)
         .arg(
             std::path::Path::new(file_to_exec)
                 .file_stem()
