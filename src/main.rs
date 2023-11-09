@@ -1,15 +1,13 @@
 #![allow(dead_code)]
 
+mod tree_sitter;
+
 use std::{
-    borrow::Cow,
-    error::Error,
-    fs::OpenOptions,
-    io::Write,
-    path::PathBuf,
-    process::Command,
+    borrow::Cow, error::Error, fs::OpenOptions, io::Write, path::PathBuf, process::Command,
     str::FromStr,
 };
 
+use crate::tree_sitter::generate_sources_for;
 use clap::Parser;
 use colored::Colorize;
 use toml_edit::Document;
@@ -94,9 +92,19 @@ pub enum Commands {
         vcd: Option<std::path::PathBuf>,
     },
 
+    ListPaths {
+        path: std::path::PathBuf,
+    },
+
+    Chase {
+        path: std::path::PathBuf,
+    },
+
     /// analyze *and* elaborate a solution
     #[clap(alias = "build")]
-    Compile { target: Option<String> },
+    Compile {
+        target: Option<String>,
+    },
 
     /// analyzes a configuration (useful for errors!), only analyzes
     Analyze {
@@ -123,8 +131,8 @@ impl Commands {
             Commands::Run { target, vcd: _ } => target.as_ref().map(|i| i.as_ref()),
             Commands::Compile { target } => target.as_ref().map(|i| i.as_ref()),
             Commands::Analyze { target } => target.as_ref().map(|i| i.as_ref()),
-            Commands::Init => None,
             Commands::Wave { target, vcd: _ } => target.as_ref().map(|i| i.as_ref()),
+            _ => None,
         }
     }
 }
@@ -141,9 +149,32 @@ fn main() -> color_eyre::Result<()> {
     Ok(())
 }
 
+fn list_targets(doc: &Document) -> Vec<&str> {
+    doc.get("target")
+        .unwrap()
+        .as_table()
+        .unwrap()
+        .iter()
+        .map(|(key, _)| key)
+        .collect::<Vec<_>>()
+}
+
 fn validate(commands: &Commands) -> Result<(), GbError> {
     if let Commands::Init = commands {
         init()?;
+        return Ok(());
+    }
+    if let Commands::Chase { path } = commands {
+        let files = tree_sitter::generate_sources_for(path);
+
+        println!(
+            "{}",
+            files
+                .into_iter()
+                .map(|file| file.display().to_string())
+                .collect::<Vec<_>>()
+                .join(" ")
+        );
         return Ok(());
     }
 
@@ -153,6 +184,7 @@ fn validate(commands: &Commands) -> Result<(), GbError> {
     let doc = manifest
         .parse::<Document>()
         .fatal("failed to parse manifest file")?;
+    list_targets(&doc);
     let default_target = doc
         .as_item()
         .get("default")
@@ -216,6 +248,11 @@ fn validate(commands: &Commands) -> Result<(), GbError> {
 
             elaborate_vhdl_solution(file_to_execute, " [2/2] ")?;
         }
+        Commands::ListPaths { path } => {
+            let srcs = generate_sources_for(path);
+
+            dbg!(srcs.iter().map(|src| src.to_str()).collect::<Vec<_>>());
+        }
         Commands::Run { target: _, vcd } => {
             analyze_vhdl(files, " [1/3] ")?;
 
@@ -237,6 +274,7 @@ fn validate(commands: &Commands) -> Result<(), GbError> {
             launch_vcd_viewer(vcd, default_vcd_viewer)?;
         }
         Commands::Init => init()?,
+        Commands::Chase { path: _ } => unreachable!(),
     }
 
     Ok(())
@@ -347,9 +385,12 @@ fn elaborate_vhdl_solution<'s>(
     );
     let file_to_exec = file_to_execute.fatal("must have a file chosen to execute in order to elaborate. Please set `execute = \"<YOUR_FILE>\" in gb.toml")?;
 
-    let args = if cfg!(target_os = "macos") { 
-        vec!["-e".to_owned(), format!("-Wl,-mmacosx-version-min={}", get_macos_version())]
-    } else { 
+    let args = if cfg!(target_os = "macos") {
+        vec![
+            "-e".to_owned(),
+            format!("-Wl,-mmacosx-version-min={}", get_macos_version()),
+        ]
+    } else {
         vec!["-e".to_owned()]
     };
     let child = Command::new("ghdl")
